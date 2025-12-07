@@ -33,6 +33,7 @@ INSTALLED_APPS = [
     # apps
     'core',
     'events',
+    'social', 
 ]
 
 MIDDLEWARE = [
@@ -74,10 +75,8 @@ DATABASES = {
     }
 }
 
-# --- USER CUSTOMIZADO ---
 AUTH_USER_MODEL = 'core.User'
 
-# --- CONFIGURAÇÃO API & JWT ---
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'dj_rest_auth.jwt_auth.JWTCookieAuthentication',
@@ -93,17 +92,15 @@ REST_AUTH = {
 }
 
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(days=1), # Token dura 1 dia (para facilitar dev)
+    'ACCESS_TOKEN_LIFETIME': timedelta(days=1),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
 }
 
-# --- CORS (Conectar com React) ---
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",
     "http://localhost:3000",
 ]
 
-# Internacionalização
 LANGUAGE_CODE = 'pt-br'
 TIME_ZONE = 'America/Sao_Paulo'
 USE_I18N = True
@@ -112,5 +109,9 @@ USE_TZ = True
 STATIC_URL = 'static/'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
+MEDIA_URL = '/media/'
+MEDIA_ROOT = BASE_DIR / 'media'
+
 EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
-ACCOUNT_EMAIL_VERIFICATION = 'none' 
+DEFAULT_FROM_EMAIL = 'no-reply@eventsync.com'
+ACCOUNT_EMAIL_VERIFICATION = 'none'
