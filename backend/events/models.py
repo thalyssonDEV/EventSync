@@ -9,10 +9,9 @@ class Event(models.Model):
     class Status(models.TextChoices):
         DRAFT = 'DRAFT', _('Rascunho')
         PUBLISHED = 'PUBLISHED', _('Publicado')
-        FINISHED = 'FINISHED', _('Finalizado') # Gatilho de XP
+        FINISHED = 'FINISHED', _('Finalizado') 
         CANCELED = 'CANCELED', _('Cancelado')
 
-    # ADICIONADO AGORA: Tipo do evento (Gratuito/Pago)
     class EventType(models.TextChoices):
         FREE = 'FREE', _('Gratuito')
         PAID = 'PAID', _('Pago')
@@ -27,10 +26,7 @@ class Event(models.Model):
     end_date = models.DateTimeField()
     
     price = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
-    
-    # ADICIONADO O CAMPO QUE FALTAVA
     event_type = models.CharField(max_length=10, choices=EventType.choices, default=EventType.FREE)
-    
     requires_approval = models.BooleanField(default=False)
     
     max_enrollments = models.PositiveIntegerField(null=True, blank=True)
@@ -44,20 +40,19 @@ class Event(models.Model):
     def __str__(self):
         return self.title
 
-    # Sobrescreve save para detectar finalização
     def save(self, *args, **kwargs):
         if self.pk:
             old = Event.objects.get(pk=self.pk)
-            # Se mudou para FINALIZED
             if old.status != self.Status.FINISHED and self.status == self.Status.FINISHED:
                 super().save(*args, **kwargs)
-                self.organizer.calculate_and_save_score() # Calcula XP
+                self.organizer.calculate_and_save_score()
                 return
         super().save(*args, **kwargs)
 
 class Registration(models.Model):
     class Status(models.TextChoices):
-        PENDING = 'PENDING', _('Pendente')
+        PENDING = 'PENDING', _('Pendente (Aprovação)')
+        AWAITING_PAYMENT = 'AWAITING_PAYMENT', _('Aguardando Pagamento')
         APPROVED = 'APPROVED', _('Aprovada')
         REJECTED = 'REJECTED', _('Recusada')
 
@@ -67,6 +62,9 @@ class Registration(models.Model):
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
     created_at = models.DateTimeField(auto_now_add=True)
     checkins_count = models.PositiveIntegerField(default=0)
+    
+    # Campo opcional para comprovante (Desafio PIX)
+    payment_proof = models.URLField(null=True, blank=True)
 
     class Meta:
         unique_together = ('event', 'user')
@@ -84,9 +82,7 @@ class Review(models.Model):
 
     def save(self, *args, **kwargs):
         super().save(*args, **kwargs)
-        # Recalcula XP ao receber review
         self.event.organizer.calculate_and_save_score()
-
 
 class Certificate(models.Model):
     event = models.ForeignKey(Event, on_delete=models.CASCADE)
