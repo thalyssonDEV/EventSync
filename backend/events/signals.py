@@ -3,6 +3,7 @@ from django.dispatch import receiver
 from django.core.mail import send_mail
 from django.conf import settings
 from .models import Registration
+from core.models import Notification
 
 @receiver(post_save, sender=Registration)
 def notify_status_change(sender, instance, created, **kwargs):
@@ -28,9 +29,16 @@ def notify_status_change(sender, instance, created, **kwargs):
         elif status == 'REJECTED':
             subject = f"Inscrição Recusada: {event.title}"
             message = "Infelizmente sua inscrição não foi aceita."
-            
+    
     if subject:
         print(f"--- [EMAIL] Enviando para {user.email}: {subject} ---")
+        
+        Notification.objects.create(
+            user=user,
+            title=subject,
+            message=message
+        )
+
         try:
             send_mail(subject, message, settings.DEFAULT_FROM_EMAIL, [user.email], fail_silently=True)
         except:

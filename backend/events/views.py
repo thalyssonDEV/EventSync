@@ -152,6 +152,17 @@ class RegistrationViewSet(viewsets.ModelViewSet):
             return Registration.objects.filter(event__organizer=user)
         return Registration.objects.filter(user=user)
 
+    def perform_destroy(self, instance):
+        # Regra 1: Não pode cancelar se o evento já acabou
+        if instance.event.status == 'FINISHED':
+            raise serializers.ValidationError("Não é possível cancelar inscrição de um evento já finalizado.")
+        
+        # Não pode cancelar se já fez check-in
+        if instance.checkins_count > 0:
+            raise serializers.ValidationError("Não é possível cancelar inscrição após ter realizado check-in.")
+
+        instance.delete()
+
     @decorators.action(detail=True, methods=['post'])
     def confirm_payment(self, request, pk=None):
         """Organizador confirma pagamento [cite: 2776]"""
