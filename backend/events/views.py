@@ -12,6 +12,7 @@ from .models import Event, Registration, CheckIn, Certificate
 from .serializers import EventSerializer, RegistrationSerializer
 from .utils import generate_certificate_pdf
 
+
 class EventViewSet(viewsets.ModelViewSet):
     queryset = Event.objects.all().order_by('-created_at')
     serializer_class = EventSerializer
@@ -25,6 +26,14 @@ class EventViewSet(viewsets.ModelViewSet):
         """Inscrição inteligente: trata Gratuito, Pago e Aprovação"""
         event = self.get_object()
         user = request.user
+
+        if not event.is_inscriptions_open:
+            return Response({"error": "As inscrições para este evento estão fechadas."}, status=400)
+
+        if event.max_enrollments:
+            current_count = Registration.objects.filter(event=event).count()
+            if current_count >= event.max_enrollments:
+                return Response({"error": "Vagas esgotadas."}, status=400)
         
         if Registration.objects.filter(event=event, user=user).exists():
             return Response({"error": "Já inscrito"}, status=400)
@@ -116,6 +125,19 @@ class EventViewSet(viewsets.ModelViewSet):
                 reg.created_at.strftime("%d/%m/%Y %H:%M"),
                 reg.checkins_count
             ])
+    
+    @decorators.action(detail=True, methods=['post'])
+    def toggle_inscriptions(self, request, pk=None):
+        """Abre ou fecha inscrições manualmente """
+        event = self.get_object()
+        if request.user != event.organizer:
+            return Response({"error": "Não autorizado"}, status=403)
+            
+        event.is_inscriptions_open = not event.is_inscriptions_open
+        event.save()
+        
+        status_msg = "Abertas" if event.is_inscriptions_open else "Fechadas"
+        return Response({"status": f"Inscrições {status_msg}"})
 
         return response
 
@@ -192,3 +214,21 @@ class ReviewViewSet(viewsets.ModelViewSet):
             raise serializers.ValidationError("Você precisa ter feito check-in para avaliar.")
             
         serializer.save(user=user)
+
+
+class CertificateViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = Certificate.objects.all()
+    permission_classes = [permissions.AllowAny]
+
+    @decorators.action(detail=False, methods=['get'], url_path='validate/(?P<code>[^/.]+)')
+    def validate(self, request, code=None):
+        """Validação pública de certificado pelo código"""
+        cert = get_object_or_404(Certificate, codigo_validacao=code)
+        
+        return Response({
+            "valid": True,
+            "event": cert.event.title,
+            "participant": f"{cert.user.first_name} {cert.user.last_name}",
+            "emitted_at": cert.data_emissao,
+            "workload": cert.event.workload_hours
+        })

@@ -6,6 +6,7 @@ from rest_framework.routers import DefaultRouter
 
 from events.views import EventViewSet, RegistrationViewSet, ReviewViewSet
 from social.views import FriendshipViewSet, MessageViewSet
+from events.views import CertificateViewSet
 
 router = DefaultRouter()
 router.register(r'events', EventViewSet)
@@ -13,6 +14,7 @@ router.register(r'registrations', RegistrationViewSet)
 router.register(r'friends', FriendshipViewSet) 
 router.register(r'messages', MessageViewSet) 
 router.register(r'reviews', ReviewViewSet)
+router.register(r'certificates', CertificateViewSet)
 
 urlpatterns = [
     path('admin/', admin.site.urls),

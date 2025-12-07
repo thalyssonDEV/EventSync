@@ -3,6 +3,8 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
 from django.core.files.base import ContentFile
 from django.utils import timezone
+import qrcode
+from reportlab.lib.utils import ImageReader
 
 def generate_certificate_pdf(certificate):
     buffer = BytesIO()
@@ -34,6 +36,14 @@ def generate_certificate_pdf(certificate):
     p.drawString(100, 200, f"Carga Horária: {certificate.event.workload_hours} horas")
     p.drawString(100, 180, f"Data de Emissão: {timezone.now().strftime('%d/%m/%Y')}")
     p.drawString(100, 160, f"Código de Validação: {certificate.codigo_validacao}")
+
+    validation_url = f"http://localhost:5173/validate/{certificate.codigo_validacao}"
+
+    qr = qrcode.make(validation_url)
+    qr_img = ImageReader(qr._img)
+
+    p.drawImage(qr_img, width - 150, 100, width=100, height=100)
+    p.drawString(width - 140, 90, "Validar Certificado")
     
     p.showPage()
     p.save()
