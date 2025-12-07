@@ -57,3 +57,14 @@ class User(AbstractUser):
             self.league = new_league
             self.organizer_rating = round(avg_rating, 2)
             self.save(update_fields=['xp', 'league', 'organizer_rating'])
+
+
+class Notification(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='notifications')
+    title = models.CharField(max_length=255)
+    message = models.TextField()
+    read = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.user} - {self.title}"

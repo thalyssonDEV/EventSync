@@ -36,6 +36,7 @@ class Event(models.Model):
     banner_url = models.URLField(blank=True, null=True)
     workload_hours = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
+    is_inscriptions_open = models.BooleanField(default=False)
 
     def __str__(self):
         return self.title
