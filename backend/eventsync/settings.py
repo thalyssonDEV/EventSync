@@ -23,6 +23,8 @@ INSTALLED_APPS = [
     'rest_framework.authtoken',
     'corsheaders',
     'dj_rest_auth',
+    'django_filters',
+    'drf_spectacular',
 
     # allauth
     'allauth',
@@ -84,6 +86,15 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticatedOrReadOnly',
     ],
+    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
+}
+
+SPECTACULAR_SETTINGS = {
+    'TITLE': 'EventSync API',
+    'DESCRIPTION': 'API para gestão de eventos acadêmicos e sociais',
+    'VERSION': '1.0.0',
+    'SERVE_INCLUDE_SCHEMA': False,
+    'COMPONENT_SPLIT_REQUEST': True
 }
 
 REST_AUTH = {
