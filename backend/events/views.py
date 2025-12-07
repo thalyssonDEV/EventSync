@@ -6,7 +6,9 @@ from django.conf import settings
 from django.core.files.storage import default_storage
 from .models import Review
 from .serializers import ReviewSerializer, UserSerializer
-import serializers
+from rest_framework import serializers
+from rest_framework import viewsets, permissions, decorators, filters 
+from django_filters.rest_framework import DjangoFilterBackend 
 
 from .models import Event, Registration, CheckIn, Certificate
 from .serializers import EventSerializer, RegistrationSerializer
@@ -17,6 +19,10 @@ class EventViewSet(viewsets.ModelViewSet):
     queryset = Event.objects.all().order_by('-created_at')
     serializer_class = EventSerializer
     permission_classes = [permissions.IsAuthenticatedOrReadOnly]
+
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    filterset_fields = ['event_type', 'status', 'organizer'] 
+    search_fields = ['title', 'description', 'location_address'] 
 
     def perform_create(self, serializer):
         serializer.save(organizer=self.request.user)
