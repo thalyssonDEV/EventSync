@@ -1,96 +1,73 @@
 from django.db import models
 from django.conf import settings
-from django.utils.translation import gettext_lazy as _
+from django.core.validators import MinValueValidator, MaxValueValidator
 import uuid
 
 User = settings.AUTH_USER_MODEL
 
 class Event(models.Model):
     class Status(models.TextChoices):
-        DRAFT = 'DRAFT', _('Rascunho')
-        PUBLISHED = 'PUBLISHED', _('Publicado')
-        FINISHED = 'FINISHED', _('Finalizado') 
-        CANCELED = 'CANCELED', _('Cancelado')
-
-    class EventType(models.TextChoices):
-        FREE = 'FREE', _('Gratuito')
-        PAID = 'PAID', _('Pago')
+        DRAFT = 'DRAFT', 'Rascunho'
+        PUBLISHED = 'PUBLISHED', 'Publicado' # Inscrições Abertas
+        IN_PROGRESS = 'IN_PROGRESS', 'Em Andamento' # Check-ins liberados
+        FINISHED = 'FINISHED', 'Finalizado' # Libera Avaliações e Certificados
+        CANCELED = 'CANCELED', 'Cancelado'
 
     organizer = models.ForeignKey(User, on_delete=models.CASCADE, related_name='events_created')
     title = models.CharField(max_length=200)
     description = models.TextField()
     location_address = models.CharField(max_length=255)
-    location_url = models.URLField(blank=True, null=True)
-    
     start_date = models.DateTimeField()
-    end_date = models.DateTimeField()
+    end_date = models.DateTimeField(null=True, blank=True)
     
-    price = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
-    event_type = models.CharField(max_length=10, choices=EventType.choices, default=EventType.FREE)
-    requires_approval = models.BooleanField(default=False)
-    
+    # Configurações
     max_enrollments = models.PositiveIntegerField(null=True, blank=True)
-    allowed_checkins = models.PositiveIntegerField(default=1)
-    
+    requires_approval = models.BooleanField(default=False) # Se True, inscrição nasce PENDENTE
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.DRAFT)
-    banner_url = models.URLField(blank=True, null=True)
-    workload_hours = models.PositiveIntegerField(default=0)
+    
+    banner = models.ImageField(upload_to='event_banners/', blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
-    is_inscriptions_open = models.BooleanField(default=False)
 
     def __str__(self):
         return self.title
 
-    def save(self, *args, **kwargs):
-        if self.pk:
-            old = Event.objects.get(pk=self.pk)
-            if old.status != self.Status.FINISHED and self.status == self.Status.FINISHED:
-                super().save(*args, **kwargs)
-                self.organizer.calculate_and_save_score()
-                return
-        super().save(*args, **kwargs)
-
-class Registration(models.Model):
+class Enrollment(models.Model):
     class Status(models.TextChoices):
-        PENDING = 'PENDING', _('Pendente (Aprovação)')
-        AWAITING_PAYMENT = 'AWAITING_PAYMENT', _('Aguardando Pagamento')
-        APPROVED = 'APPROVED', _('Aprovada')
-        REJECTED = 'REJECTED', _('Recusada')
+        PENDING = 'PENDING', 'Pendente' # Aguardando aprovação do org
+        APPROVED = 'APPROVED', 'Aprovada' # Confirmado, gera QR Code
+        REJECTED = 'REJECTED', 'Recusada'
+        CANCELED = 'CANCELED', 'Cancelada pelo usuário'
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='registrations')
-    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='registrations')
-    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
-    created_at = models.DateTimeField(auto_now_add=True)
-    checkins_count = models.PositiveIntegerField(default=0)
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='enrollments')
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='enrollments')
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.APPROVED)
     
-    # Campo opcional para comprovante (Desafio PIX)
-    payment_proof = models.URLField(null=True, blank=True)
+    # Controle de Presença
+    checked_in = models.BooleanField(default=False)
+    checkin_time = models.DateTimeField(null=True, blank=True)
+    
+    created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         unique_together = ('event', 'user')
 
-class CheckIn(models.Model):
-    registration = models.ForeignKey(Registration, on_delete=models.CASCADE, related_name='checkins')
-    timestamp = models.DateTimeField(auto_now_add=True)
-
 class Review(models.Model):
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='reviews')
     user = models.ForeignKey(User, on_delete=models.CASCADE)
-    rating = models.PositiveIntegerField()
+    rating = models.IntegerField(validators=[MinValueValidator(1), MaxValueValidator(5)])
     comment = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
-    def save(self, *args, **kwargs):
-        super().save(*args, **kwargs)
-        self.event.organizer.calculate_and_save_score()
+    class Meta:
+        unique_together = ('event', 'user') # Usuário só avalia 1 vez por evento
 
 class Certificate(models.Model):
-    event = models.ForeignKey(Event, on_delete=models.CASCADE)
-    user = models.ForeignKey(User, on_delete=models.CASCADE)
-    url_pdf = models.URLField()
-    data_emissao = models.DateTimeField(auto_now_add=True)
-    codigo_validacao = models.CharField(max_length=100, unique=True)
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='certificates')
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='certificates')
+    issue_date = models.DateTimeField(auto_now_add=True)
+    validation_code = models.CharField(max_length=50, unique=True) # Hash para validar
 
     def __str__(self):
         return f"Certificado {self.user} - {self.event}"

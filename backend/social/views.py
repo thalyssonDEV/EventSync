@@ -16,7 +16,6 @@ class FriendshipViewSet(viewsets.ModelViewSet):
         )
 
     def perform_create(self, serializer):
-        # [cite_start]REGRA PDF: Ambos devem estar inscritos e aprovados no evento [cite: 2813]
         event = serializer.validated_data['event']
         to_user = serializer.validated_data['to_user']
         from_user = self.request.user
@@ -52,7 +51,6 @@ class MessageViewSet(viewsets.ModelViewSet):
         recipient = serializer.validated_data['recipient']
         sender = self.request.user
         
-        # REGRA: Só pode enviar msg se forem amigos
         is_friend = FriendshipRequest.objects.filter(
             status='ACCEPTED'
         ).filter(

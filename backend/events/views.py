@@ -1,251 +1,313 @@
-import uuid
-from rest_framework import viewsets, permissions, decorators
+from rest_framework import viewsets, permissions, serializers, status
+from rest_framework.decorators import action
 from rest_framework.response import Response
+from rest_framework.permissions import IsAuthenticated, AllowAny
+from django.utils import timezone
+from django.db.models import Avg, Q 
+import uuid
+from .models import Event, Enrollment, Review, Certificate
+from .serializers import EventSerializer, EnrollmentSerializer, ReviewSerializer, CertificateSerializer
+from django.http import HttpResponse, FileResponse
+import csv
 from django.shortcuts import get_object_or_404
-from django.conf import settings
-from django.core.files.storage import default_storage
-from .models import Review
-from .serializers import ReviewSerializer, UserSerializer
-from rest_framework import serializers
-from rest_framework import viewsets, permissions, decorators, filters 
-from django_filters.rest_framework import DjangoFilterBackend 
-
-from .models import Event, Registration, CheckIn, Certificate
-from .serializers import EventSerializer, RegistrationSerializer
 from .utils import generate_certificate_pdf
 
+# Função auxiliar para os Ranks
+def update_league(user):
+    """Atualiza a liga do usuário baseado no XP acumulado."""
+    xp = user.xp or 0
+    if xp < 200: user.league = 'Novato'
+    elif xp < 500: user.league = 'Bronze'
+    elif xp < 1000: user.league = 'Prata'
+    elif xp < 2000: user.league = 'Ouro'
+    elif xp < 3500: user.league = 'Platina'
+    elif xp < 6000: user.league = 'Diamante'
+    elif xp < 10000: user.league = 'Mestre dos Eventos'
+    else: user.league = 'CEO dos Eventos'
 
 class EventViewSet(viewsets.ModelViewSet):
-    queryset = Event.objects.all().order_by('-created_at')
+    queryset = Event.objects.all()
     serializer_class = EventSerializer
     permission_classes = [permissions.IsAuthenticatedOrReadOnly]
 
-    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
-    filterset_fields = ['event_type', 'status', 'organizer'] 
-    search_fields = ['title', 'description', 'location_address'] 
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context['request'] = self.request
+        return context
+
+    def get_queryset(self):
+        # Se a ação for 'list' (o Feed da Home), aplicamos o filtro.
+        if self.action == 'list':
+            return Event.objects.exclude(status__in=['FINISHED', 'CANCELED']).order_by('start_date')
+
+        return Event.objects.all().order_by('start_date')
 
     def perform_create(self, serializer):
-        serializer.save(organizer=self.request.user)
+        serializer.save(organizer=self.request.user, status='DRAFT')
 
-    @decorators.action(detail=True, methods=['post'])
-    def register(self, request, pk=None):
-        """Inscrição inteligente: trata Gratuito, Pago e Aprovação"""
-        event = self.get_object()
+    # --- AÇÕES DO ORGANIZADOR ---
+    
+    @action(detail=False, methods=['get'], permission_classes=[permissions.IsAuthenticated])
+    def my_created_events(self, request):
+        # Histórico do Organizador (vê tudo: cancelados, finalizados, rascunhos)
         user = request.user
-
-        if not event.is_inscriptions_open:
-            return Response({"error": "As inscrições para este evento estão fechadas."}, status=400)
-
-        if event.max_enrollments:
-            current_count = Registration.objects.filter(event=event).count()
-            if current_count >= event.max_enrollments:
-                return Response({"error": "Vagas esgotadas."}, status=400)
-        
-        if Registration.objects.filter(event=event, user=user).exists():
-            return Response({"error": "Já inscrito"}, status=400)
-        
-        initial_status = 'PENDING'
-        
-        if event.event_type == 'PAID':
-            initial_status = 'AWAITING_PAYMENT'
-        elif not event.requires_approval:
-            initial_status = 'APPROVED'
-            
-        reg = Registration.objects.create(event=event, user=user, status=initial_status)
-        
-        response_data = RegistrationSerializer(reg).data
-        if initial_status == 'AWAITING_PAYMENT':
-            # Simulação de PIX
-            response_data['payment_instruction'] = f"Chave PIX: {event.organizer.email} | Valor: R$ {event.price}"
-            
-        return Response(response_data)
-
-    @decorators.action(detail=True, methods=['post'])
-    def finish(self, request, pk=None):
-        event = self.get_object()
-        if request.user != event.organizer:
-            return Response({"error": "Apenas o dono pode finalizar"}, status=403)
-        
-        event.status = Event.Status.FINISHED
-        event.save() 
-        return Response({"status": "Evento Finalizado! Certificados liberados."})
-
-    @decorators.action(detail=True, methods=['post'])
-    def checkin(self, request, pk=None):
-        """Check-in via QR Code [cite: 2754]"""
-        reg_id = request.data.get('registration_id')
-        registration = get_object_or_404(Registration, id=reg_id, event_id=pk)
-        
-        if registration.status != 'APPROVED':
-            return Response({"error": "Inscrição não confirmada"}, status=400)
-            
-        if registration.checkins_count >= registration.event.allowed_checkins:
-            return Response({"error": "Limite de check-ins atingido"}, status=400)
-            
-        CheckIn.objects.create(registration=registration)
-        registration.checkins_count += 1
-        registration.save()
-        
-        return Response({
-            "status": "Check-in Sucesso",
-            "participant": registration.user.first_name,
-            "total_checkins": registration.checkins_count
-        })
-
-    @decorators.action(detail=True, methods=['get'])
-    def participants(self, request, pk=None):
-        """Lista participantes públicos para a funcionalidade Social"""
-        event = self.get_object()
-        # Filtra apenas inscrições APROVADAS/CHECKIN de usuários que permitiram visibilidade
-        public_registrations = Registration.objects.filter(
-            event=event, 
-            status__in=['APPROVED', 'CHECKIN'],
-            user__is_participation_visible=True
-        )
-        
-        # Queremos retornar dados dos usuários, não da inscrição em si
-        users = [reg.user for reg in public_registrations]
-        serializer = UserSerializer(users, many=True)
+        events = Event.objects.filter(organizer=user).order_by('-start_date')
+        serializer = self.get_serializer(events, many=True)
         return Response(serializer.data)
-
-    @decorators.action(detail=True, methods=['get'])
-    def export(self, request, pk=None):
-        """Gera CSV para o organizador"""
-        event = self.get_object()
+    
+    @action(detail=True, methods=['get'])
+    def export_enrollments(self, request, pk=None):
+        """Exporta todas as inscrições aprovadas/confirmadas como CSV."""
+        event = self.get_object() # Obtém o objeto Evento
         
-        if request.user != event.organizer:
-            return Response({"error": "Apenas o organizador pode exportar"}, status=403)
-            
+        # O nome do arquivo será EventSync_Inscritos_NomeDoEvento.csv
         response = HttpResponse(content_type='text/csv')
-        response['Content-Disposition'] = f'attachment; filename="participantes_{event.id}.csv"'
+        response['Content-Disposition'] = f'attachment; filename="EventSync_Inscritos_{event.title.replace(" ", "_")}.csv"'
 
         writer = csv.writer(response)
-        writer.writerow(['Nome', 'Email', 'Status', 'Data Inscrição', 'Check-ins'])
-
-        registrations = Registration.objects.filter(event=event)
-        for reg in registrations:
-            writer.writerow([
-                reg.user.get_full_name(),
-                reg.user.email,
-                reg.get_status_display(),
-                reg.created_at.strftime("%d/%m/%Y %H:%M"),
-                reg.checkins_count
-            ])
-    
-    @decorators.action(detail=True, methods=['post'])
-    def toggle_inscriptions(self, request, pk=None):
-        """Abre ou fecha inscrições manualmente """
-        event = self.get_object()
-        if request.user != event.organizer:
-            return Response({"error": "Não autorizado"}, status=403)
-            
-        event.is_inscriptions_open = not event.is_inscriptions_open
-        event.save()
         
-        status_msg = "Abertas" if event.is_inscriptions_open else "Fechadas"
-        return Response({"status": f"Inscrições {status_msg}"})
+        # 1. Escrever o cabeçalho do CSV
+        writer.writerow(['Nome Completo', 'Email', 'Status da Inscricao', 'Check-in Realizado?', 'Data/Hora Check-in'])
+
+        # 2. Filtrar as Inscrições para exportar (pode filtrar apenas 'APPROVED' se quiser)
+        enrollments = Enrollment.objects.filter(event=event).select_related('user')
+        
+        # 3. Escrever os dados de cada linha
+        for enrollment in enrollments:
+            
+            checkin_status = 'Sim' if enrollment.checked_in else 'Não'
+            checkin_time = enrollment.checkin_time.strftime("%d/%m/%Y %H:%M") if enrollment.checkin_time else '-'
+
+            writer.writerow([
+                enrollment.user.first_name + ' ' + enrollment.user.last_name,
+                enrollment.user.email,
+                enrollment.get_status_display(), # Usa o nome amigável do status
+                checkin_status,
+                checkin_time
+            ])
 
         return response
 
-class RegistrationViewSet(viewsets.ModelViewSet):
-    queryset = Registration.objects.all()
-    serializer_class = RegistrationSerializer
+    @action(detail=True, methods=['post'], permission_classes=[permissions.IsAuthenticated])
+    def publish(self, request, pk=None):
+        event = self.get_object()
+        if event.organizer != request.user: return Response(status=403)
+        event.status = 'PUBLISHED'
+        event.save()
+        return Response({'status': 'Evento publicado!'})
+
+    @action(detail=True, methods=['post'], permission_classes=[permissions.IsAuthenticated])
+    def cancel_event(self, request, pk=None):
+        event = self.get_object()
+        if event.organizer != request.user: return Response(status=403)
+        
+        # Só pode cancelar se NÃO começou e NÃO acabou
+        if event.status in ['IN_PROGRESS', 'FINISHED']:
+            return Response({'error': 'Evento em andamento ou finalizado não pode ser cancelado.'}, status=400)
+
+        event.status = 'CANCELED'
+        event.save()
+        return Response({'status': 'Evento cancelado com sucesso.'})
+
+    @action(detail=True, methods=['post'], permission_classes=[permissions.IsAuthenticated])
+    def start_event(self, request, pk=None):
+        event = self.get_object()
+        if event.organizer != request.user: return Response(status=403)
+        event.status = 'IN_PROGRESS'
+        event.save()
+        return Response({'status': 'Evento iniciado!'})
+    
+    @action(detail=True, methods=['post'], permission_classes=[permissions.IsAuthenticated])
+    def finish_event(self, request, pk=None):
+        event = self.get_object()
+        if event.organizer != request.user: return Response(status=403)
+        
+        if event.status == 'FINISHED': return Response({'error': 'Já finalizado.'}, status=400)
+
+        event.status = 'FINISHED'
+        event.save()
+        
+        # Gamificação Organizador
+        organizer = event.organizer
+        organizer.xp = (organizer.xp or 0) + 50 
+        update_league(organizer)
+        organizer.save()
+
+        return Response({'status': 'Evento finalizado! +50 XP.'})
+
+class EnrollmentViewSet(viewsets.ModelViewSet):
+    serializer_class = EnrollmentSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
         user = self.request.user
-        if user.role == 'ORGANIZER':
-            return Registration.objects.filter(event__organizer=user)
-        return Registration.objects.filter(user=user)
-
-    def perform_destroy(self, instance):
-        # Regra 1: Não pode cancelar se o evento já acabou
-        if instance.event.status == 'FINISHED':
-            raise serializers.ValidationError("Não é possível cancelar inscrição de um evento já finalizado.")
-        
-        # Não pode cancelar se já fez check-in
-        if instance.checkins_count > 0:
-            raise serializers.ValidationError("Não é possível cancelar inscrição após ter realizado check-in.")
-
-        instance.delete()
-
-    @decorators.action(detail=True, methods=['post'])
-    def confirm_payment(self, request, pk=None):
-        """Organizador confirma pagamento [cite: 2776]"""
-        reg = self.get_object()
-        if request.user != reg.event.organizer:
-            return Response({"error": "Não autorizado"}, status=403)
-            
-        if reg.status != 'AWAITING_PAYMENT':
-            return Response({"error": "Status inválido para confirmação"}, status=400)
-            
-        if reg.event.requires_approval:
-            reg.status = 'PENDING'
-        else:
-            reg.status = 'APPROVED'
-            
-        reg.save()
-        return Response({"status": "Pagamento confirmado", "new_status": reg.status})
-
-    @decorators.action(detail=True, methods=['post'])
-    def download_certificate(self, request, pk=None):
-        """Gera e retorna URL do PDF [cite: 2853]"""
-        reg = self.get_object()
-        
-        if reg.user != request.user: return Response({"error": "Inválido"}, status=403)
-        if reg.event.status != 'FINISHED': return Response({"error": "Evento não finalizado"}, status=400)
-        if reg.checkins_count < 1: return Response({"error": "Sem presença"}, status=400)
-        
-        cert, created = Certificate.objects.get_or_create(
-            event=reg.event, user=reg.user,
-            defaults={'codigo_validacao': str(uuid.uuid4())}
-        )
-        
-        if not cert.url_pdf:
-            pdf_file = generate_certificate_pdf(cert)
-            path = default_storage.save(f"certificates/{cert.codigo_validacao}.pdf", pdf_file)
-            cert.url_pdf = request.build_absolute_uri(settings.MEDIA_URL + path)
-            cert.save()
-            
-        return Response({"url": cert.url_pdf, "codigo": cert.codigo_validacao})
-
-
-class ReviewViewSet(viewsets.ModelViewSet):
-    queryset = Review.objects.all()
-    serializer_class = ReviewSerializer
-    permission_classes = [permissions.IsAuthenticated]
+        queryset = Enrollment.objects.filter(Q(user=user) | Q(event__organizer=user)).distinct()
+        event_id = self.request.query_params.get('event_id')
+        if event_id:
+            queryset = queryset.filter(event_id=event_id)
+        return queryset
 
     def perform_create(self, serializer):
-        # Regra do PDF: Só pode avaliar se participou (Check-in >= 1) e evento acabou
+        event = serializer.validated_data['event']
+        if event.status != 'PUBLISHED': raise serializers.ValidationError("Inscrições fechadas.")
+        initial_status = 'PENDING' if event.requires_approval else 'APPROVED'
+        serializer.save(user=self.request.user, status=initial_status)
+
+    @action(detail=True, methods=['post'])
+    def approve(self, request, pk=None):
+        enrollment = self.get_object()
+        if enrollment.event.organizer != request.user: return Response(status=403)
+        enrollment.status = 'APPROVED'
+        enrollment.save()
+        return Response({'status': 'Aprovado'})
+
+    @action(detail=True, methods=['post'])
+    def reject(self, request, pk=None):
+        enrollment = self.get_object()
+        if enrollment.event.organizer != request.user: return Response(status=403)
+        enrollment.status = 'REJECTED'
+        enrollment.save()
+        return Response({'status': 'Rejeitado'})
+
+    @action(detail=True, methods=['post'])
+    def checkin(self, request, pk=None):
+        enrollment = self.get_object()
+        if enrollment.event.organizer != request.user: return Response(status=403)
+        
+        if enrollment.event.status != 'IN_PROGRESS':
+            return Response({'error': 'O evento precisa estar EM ANDAMENTO para realizar check-in.'}, status=400)
+
+        if enrollment.status != 'APPROVED': return Response({'error': 'Inscrição não aprovada.'}, status=400)
+        if enrollment.checked_in: return Response({'error': 'Check-in já realizado.'}, status=400)
+
+        enrollment.checked_in = True
+        enrollment.checkin_time = timezone.now()
+        enrollment.save()
+        return Response({'status': 'Check-in realizado!'})
+
+class ReviewViewSet(viewsets.ModelViewSet):
+    serializer_class = ReviewSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    queryset = Review.objects.all()
+
+    def perform_create(self, serializer):
         event = serializer.validated_data['event']
         user = self.request.user
-        
-        if event.status != 'FINISHED':
-            raise serializers.ValidationError("O evento precisa estar finalizado para receber avaliações.")
-            
-        has_checkin = Registration.objects.filter(
-            event=event, user=user, checkins_count__gt=0
-        ).exists()
-        
-        if not has_checkin:
-            raise serializers.ValidationError("Você precisa ter feito check-in para avaliar.")
-            
-        serializer.save(user=user)
 
+        if event.status != 'FINISHED': raise serializers.ValidationError("Evento não finalizado.")
+        
+        has_checkin = Enrollment.objects.filter(user=user, event=event, checked_in=True).exists()
+        if not has_checkin: raise serializers.ValidationError("Você precisa ter feito Check-in.")
+
+        if Review.objects.filter(user=user, event=event).exists():
+            raise serializers.ValidationError("Já avaliado.")
+
+        review = serializer.save(user=user)
+
+        organizer = event.organizer
+        avg_rating = Review.objects.filter(event__organizer=organizer).aggregate(Avg('rating'))['rating__avg']
+        organizer.organizer_rating = round(avg_rating, 1) if avg_rating else 0
+
+        xp_gain = 0
+        if review.rating == 5: xp_gain = 30
+        elif review.rating == 4: xp_gain = 15
+        elif review.rating == 3: xp_gain = 5
+        
+        organizer.xp = (organizer.xp or 0) + xp_gain
+        update_league(organizer)
+        organizer.save()
 
 class CertificateViewSet(viewsets.ReadOnlyModelViewSet):
-    queryset = Certificate.objects.all()
-    permission_classes = [permissions.AllowAny]
+    serializer_class = CertificateSerializer
+    permission_classes = [permissions.IsAuthenticated]
 
-    @decorators.action(detail=False, methods=['get'], url_path='validate/(?P<code>[^/.]+)')
-    def validate(self, request, code=None):
-        """Validação pública de certificado pelo código"""
-        cert = get_object_or_404(Certificate, codigo_validacao=code)
+    def get_queryset(self):
+        return Certificate.objects.filter(user=self.request.user)
+
+    @action(detail=False, methods=['get'], permission_classes=[IsAuthenticated], url_path='generate_and_download')
+    def generate_and_download(self, request):
+        """
+        Gera o PDF do certificado para o usuário logado e força o download.
+        Requer autenticação e recebe o ID do evento via query parameter (?event_id=X).
+        Garante que o código de validação existe antes de gerar o PDF.
+        """
         
-        return Response({
-            "valid": True,
-            "event": cert.event.title,
-            "participant": f"{cert.user.first_name} {cert.user.last_name}",
-            "emitted_at": cert.data_emissao,
-            "workload": cert.event.workload_hours
-        })
+        event_id_str = request.query_params.get('event_id')
+        user = request.user 
+        
+        # 1. VALIDAÇÃO E CONVERSÃO DO ID
+        if not event_id_str:
+            return Response({"detail": "ID do evento não fornecido."}, status=status.HTTP_400_BAD_REQUEST)
+            
+        try:
+            event_id = int(event_id_str) 
+        except ValueError:
+            return Response({"detail": "ID do evento inválido."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # 2. BUSCA DO EVENTO E VERIFICAÇÃO DE PARTICIPAÇÃO
+        event = get_object_or_404(Event, id=event_id)
+        
+        # Opcional, mas altamente recomendado: Verifica se o usuário tem direito (inscrito e aprovado)
+        if not Enrollment.objects.filter(user=user, event=event, status='APPROVED').exists():
+            return Response({"detail": "Você não está inscrito ou não tem permissão para este certificado."}, 
+                            status=status.HTTP_403_FORBIDDEN)
+        
+        # 3. BUSCA OU CRIAÇÃO DO OBJETO CERTIFICATE
+        # Busca o certificado existente ou cria um novo, sem preencher validation_code.
+        certificate, created = Certificate.objects.get_or_create(user=user, event=event)
+
+        # 4. GARANTIA DO CÓDIGO DE VALIDAÇÃO (CORREÇÃO)
+        # Se o objeto é novo OU se o código de validação está vazio, nós o geramos e salvamos.
+        if created or not certificate.validation_code:
+            
+            # Tenta gerar um código UUID de 8 caracteres e verifica a unicidade
+            new_code = str(uuid.uuid4()).replace('-', '').upper()[:8] 
+            
+            # Loop para garantir unicidade (embora a probabilidade seja baixíssima, é seguro)
+            while Certificate.objects.filter(validation_code=new_code).exists():
+                new_code = str(uuid.uuid4()).replace('-', '').upper()[:8]
+            
+            # Atribui e salva as informações
+            certificate.validation_code = new_code
+            certificate.issue_date = timezone.now() 
+            certificate.save() # Persiste o novo código no banco de dados
+
+        # 5. GERAÇÃO DO PDF (função ReportLab)
+        pdf_content_file = generate_certificate_pdf(certificate)
+        
+        # 6. RETORNA O PDF COMO RESPOSTA DE DOWNLOAD
+        response = FileResponse(pdf_content_file, content_type='application/pdf')
+        
+        # Define o nome do arquivo para o navegador
+        response['Content-Disposition'] = f'attachment; filename="{pdf_content_file.name}"'
+        
+        # Necessário para o Front-end Axios/Blob obter o nome do arquivo
+        response['Access-Control-Expose-Headers'] = 'Content-Disposition'
+
+        return response
+    
+    @action(detail=False, methods=['get'], permission_classes=[AllowAny], url_path='validate_code/(?P<code>[^/.]+)')
+    def validate_code(self, request, code):
+        """
+        Endpoint público usado pelo QR Code para verificar a validade de um certificado.
+        Recebe o código de validação via URL (ex: /api/certificates/validate_code/1B394CAF).
+        """
+        try:
+            # 1. Busca o certificado pelo código de validação
+            certificate = Certificate.objects.get(validation_code=code)
+            
+            # 2. Retorna sucesso e os dados (para Front-end mostrar detalhes)
+            serializer = self.get_serializer(certificate) # Usando o CertificateSerializer existente
+            
+            return Response({
+                "valid": True,
+                "message": "Certificado válido!",
+                "certificate_details": serializer.data
+            }, status=status.HTTP_200_OK)
+            
+        except Certificate.DoesNotExist:
+            # 3. Retorna erro 404 se não encontrado
+            return Response({
+                "valid": False,
+                "message": "O código não foi encontrado ou expirou."
+            }, status=status.HTTP_404_NOT_FOUND)
