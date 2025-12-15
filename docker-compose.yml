@@ -1,0 +1,33 @@
+services:
+  backend:
+    build:
+      context: ./backend 
+      dockerfile: Dockerfile
+    container_name: eventsync_backend
+    command: >
+      sh -c "python manage.py migrate && 
+             python manage.py runserver 0.0.0.0:8000"
+    volumes:
+      - ./backend:/app 
+      - backend_data:/app/db_data 
+    ports:
+      - "8000:8000"
+    environment:
+      ALLOWED_HOSTS: localhost,127.0.0.1,backend
+
+  frontend:
+    build:
+      context: ./eventsync-frontend 
+      dockerfile: Dockerfile
+    container_name: eventsync_frontend
+    command: npm run dev -- --host 0.0.0.0 
+    volumes:
+      - ./eventsync-frontend:/app
+      - /app/node_modules 
+    ports:
+      - "5173:5173" 
+    environment:
+      VITE_API_BASE_URL: http://backend:8000
+
+volumes:
+  backend_data:

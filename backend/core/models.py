@@ -13,7 +13,7 @@ class User(AbstractUser):
     
     # Campos do Projeto
     city = models.CharField(max_length=100, blank=True, null=True)
-    photo_url = models.URLField(max_length=500, blank=True, null=True)
+    photo = models.ImageField(upload_to='user_photos/', blank=True, null=True)
     is_participation_visible = models.BooleanField(default=True)
     organizer_rating = models.FloatField(default=0.0)
     
